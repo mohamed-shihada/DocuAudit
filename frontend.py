@@ -16,86 +16,98 @@ st.markdown("فحص وتدقيق بنود العقود والمستندات بد
 if "document_store" not in st.session_state:
     st.session_state["document_store"] = []
 
-# --- دالة تنقية الحروف العربية وتوحيدها ---
+# --- دالة توحيد وتجريد الحروف العربية ---
 def normalize_ar(text: str) -> str:
     text = re.sub(r"[إأآا]", "ا", text)
     text = re.sub(r"ى", "ي", text)
     text = re.sub(r"ة", "ه", text)
     text = re.sub(r"[ًٌٍَُِّْـ]", "", text)
-    # إزالة علامات الترقيم والأقواس
     text = re.sub(r"[^\w\s]", " ", text)
     return text.lower().strip()
 
-def extract_keywords(query: str):
-    # إذا كان الاستعلام يحتوي على السرية، نضمن البحث عن الجذر مباشرة
-    if "سرية" in normalize_ar(query) or "افصاح" in normalize_ar(query):
-        return ["سريه", "افصاح"]
-
-    stop_words = {"في", "من", "على", "الى", "إلى", "عن", "مع", "او", "أو", "ثم", "كل", "أي", "شروط", "بنود", "عدم"}
-    raw_words = query.strip().split()
-    clean_words = []
-    for w in raw_words:
-        nw = normalize_ar(w)
-        if nw.startswith("و") and len(nw) > 3:
-            nw = nw[1:]
-        if nw.startswith("ال") and len(nw) > 4:
-            clean_words.append(nw[2:])
-        if nw and nw not in stop_words and len(nw) > 1:
-            clean_words.append(nw)
-    return list(set(clean_words))
+def get_search_tokens(query: str):
+    """استخراج الجذور والكلمات الأساسية للبحث بمرونة كاملة"""
+    norm = normalize_ar(query)
+    tokens = []
+    
+    # حالات خاصة للبند الحرج
+    if "سر" in norm or "افصاح" in norm:
+        tokens.extend(["سر", "افصاح", "كتمان"])
+    if "جزا" in norm or "غرام" in norm:
+        tokens.extend(["جزا", "غرام", "تاخير", "تعويض"])
+    if "فسخ" in norm or "انها" in norm:
+        tokens.extend(["فسخ", "انها", "اخلال"])
+    if "التزام" in norm or "نطاق" in norm or "عمل" in norm:
+        tokens.extend(["التزام", "تسليم", "نطاق"])
+        
+    # إضافة باقي الكلمات المنفصلة
+    for word in norm.split():
+        w = word.strip()
+        if w.startswith("و") and len(w) > 3:
+            w = w[1:]
+        if w.startswith("ال") and len(w) > 4:
+            w = w[2:]
+        if len(w) >= 3 and w not in ["شروط", "بنود", "عدم", "علي", "في"]:
+            tokens.append(w)
+            
+    return list(set(tokens))
 
 def process_pdf(file_bytes, filename):
     pdf_reader = PdfReader(io.BytesIO(file_bytes))
     store = []
-    raw_full_text = ""
+    full_text_debug = ""
 
     for page_idx, page in enumerate(pdf_reader.pages, start=1):
         text = page.extract_text() or ""
-        raw_full_text += f"\n--- صفحة {page_idx} ---\n" + text
-        if not text.strip():
-            continue
+        full_text_debug += f"\n--- صفحة {page_idx} ---\n" + text
         
-        # تقسيم بالفقرات أولاً، ثم بحجم 400 حرف لضمان عدم تشتيت البند
-        paragraphs = [p.strip() for p in text.split("\n\n") if len(p.strip()) > 20]
-        if not paragraphs:
-            paragraphs = [text[i:i+400] for i in range(0, len(text), 300)]
+        # تنظيف الفواصل المزدوجة وتقطيع النص بنظام النافذة المتداخلة لضمان عدم ضياع أي بند
+        clean_page_text = " ".join(text.split())
+        if not clean_page_text:
+            continue
             
-        for chunk in paragraphs:
-            store.append({
-                "text": chunk,
-                "norm_text": normalize_ar(chunk),
-                # النسخة المعكوسة من النص لاكتشاف النصوص المعكوسة بـ PDF
-                "reversed_norm": normalize_ar(chunk[::-1]),
-                "page": page_idx,
-                "filename": filename
-            })
-            
-    return store, len(pdf_reader.pages), raw_full_text
+        chunk_len = 350
+        step = 180
+        
+        for i in range(0, max(len(clean_page_text), 1), step):
+            chunk = clean_page_text[i:i + chunk_len]
+            if len(chunk.strip()) > 15:
+                store.append({
+                    "text": chunk,
+                    "norm_text": normalize_ar(chunk),
+                    "reversed_norm": normalize_ar(chunk[::-1]),
+                    "page": page_idx,
+                    "filename": filename
+                })
+                
+    return store, len(pdf_reader.pages), full_text_debug
 
 def analyze_risk_and_summary(query, excerpt):
-    norm_excerpt = normalize_ar(excerpt)
-    risk_keywords_high = ["غرامه", "تعويض", "فسخ", "جزائي", "انهاء فوري", "مسؤوليه", "مصادره", "خسائر"]
-    risk_keywords_medium = ["اشعار", "تاخير", "تعديل", "مهله", "ضمان", "سريه", "افصاح"]
+    norm_excerpt = normalize_ar(excerpt) + " " + normalize_ar(excerpt[::-1])
+    
+    risk_keywords_high = ["غرام", "تعويض", "فسخ", "جزا", "انهاء فوري", "مسؤول", "مصادر", "خسائر"]
+    risk_keywords_medium = ["اشعار", "تاخير", "تعديل", "مهل", "ضمان", "سر", "افصاح"]
 
     risk_level = "منخفضة"
     for kw in risk_keywords_high:
-        if kw in norm_excerpt or kw in normalize_ar(excerpt[::-1]):
+        if kw in norm_excerpt:
             risk_level = "عالية ⚠️"
             break
+            
     if risk_level == "منخفضة":
         for kw in risk_keywords_medium:
-            if kw in norm_excerpt or kw in normalize_ar(excerpt[::-1]):
+            if kw in norm_excerpt:
                 risk_level = "متوسطة ⚡"
                 break
 
     recommendation = (
         f"تم رصد تطابق مع ({query}). "
         f"مستوى الحساسية القانونية والتشغيلية: {risk_level}. "
-        "يُنصح بمراجعة التبعات المالية والالتزامات المتبادلة بدقة."
+        "يُنصح بمراجعة التبعات التشغيلية والالتزامات التعاقدية المرتبطة بهذا النص بدقة."
     )
     return risk_level, recommendation
 
-# --- القائمة الجانبية ---
+# --- القائمة الجانبية: رفع المستند ---
 with st.sidebar:
     st.header("📄 رفع المستند")
     uploaded_file = st.file_uploader("اختر ملف PDF للعقد أو الوثيقة", type=["pdf"])
@@ -106,13 +118,13 @@ with st.sidebar:
 
         if st.button("بدء المعالجة والفهرسة", type="primary"):
             with st.spinner("جاري استخراج النصوص وتجهيز الفهرسة..."):
-                store, pages_count, raw_text = process_pdf(uploaded_file.getvalue(), uploaded_file.name)
+                store, pages_count, debug_txt = process_pdf(uploaded_file.getvalue(), uploaded_file.name)
                 st.session_state["document_store"] = store
-                st.session_state["raw_text_preview"] = raw_text
+                st.session_state["debug_txt"] = debug_txt
                 st.session_state["ready_for_audit"] = True
-                st.success(f"✅ تمت فهرسة {pages_count} صفحة بنجاح ({len(store)} فقرة).")
+                st.success(f"✅ تمت فهرسة {pages_count} صفحة بنجاح ({len(store)} كتلة نصية).")
 
-# --- الواجهة الرئيسية ---
+# --- الواجهة الرئيسية: تقسيم الشاشة ---
 col_pdf, col_audit = st.columns([1, 1], gap="medium")
 
 with col_pdf:
@@ -129,14 +141,14 @@ with col_audit:
     
     clause_query = st.text_input(
         "أدخل كلمة أو بنداً للتدقيق عنه:",
-        placeholder="مثال: غرامة، جزائي، فسخ، سرية..."
+        placeholder="مثال: غرامة، فسخ، سرية..."
     )
 
     quick_checks = [
         "-- بنود جاهزة للاختيار السريع --", 
-        "غرامة التأخير والشرط الجزائي", 
-        "فسخ العقد وإنهاء التعاقد", 
-        "السرية وعدم الإفصاح",
+        "الشروط الجزائية وغرامات التأخير", 
+        "شروط إنهاء وفسخ التعاقد", 
+        "التزامات السرية وعدم الإفصاح",
         "الالتزامات ونطاق العمل"
     ]
     selected_quick = st.selectbox("أو اختر فحصاً سريعاً:", quick_checks)
@@ -149,25 +161,23 @@ with col_audit:
         elif not st.session_state.get("ready_for_audit", False):
             st.warning("يرجى الضغط على زر 'بدء المعالجة والفهرسة' في القائمة الجانبية أولاً.")
         else:
-            with st.spinner("جاري مطابقة المقاطع وتقدير المخاطر..."):
-                keywords = extract_keywords(clause_query)
+            with st.spinner("جاري فحص وتدقيق البند المستهدف..."):
+                tokens = get_search_tokens(clause_query)
                 matches = []
                 
                 for item in st.session_state["document_store"]:
                     score = 0
-                    for kw in keywords:
-                        # مطابقة في النص العادي أو النص المعكوس (لحل مشكلة ترميز PDF العربي)
-                        if kw in item["norm_text"] or kw in item["reversed_norm"]:
+                    combined_norm = item["norm_text"] + " " + item["reversed_norm"]
+                    for tok in tokens:
+                        if tok in combined_norm:
                             score += 1
-                        elif len(kw) > 3 and (kw[:len(kw)-1] in item["norm_text"] or kw[:len(kw)-1] in item["reversed_norm"]):
-                            score += 0.5
                     
                     if score > 0:
                         risk, rec = analyze_risk_and_summary(clause_query, item["text"])
                         matches.append({
                             "excerpt": item["text"],
                             "page": item["page"],
-                            "similarity_score": round(min(score / max(len(keywords), 1), 1.0), 2),
+                            "similarity_score": round(min(score / max(len(tokens), 1), 1.0), 2),
                             "risk_level": risk,
                             "recommendation": rec
                         })
@@ -183,12 +193,8 @@ with col_audit:
         
         if not st.session_state["latest_results"]:
             st.warning("لم يتم العثور على فقرات مطابقة لنص البحث داخل الوثيقة.")
-            # إظهار نافذة استكشافية للتأكد من قراءة النص
-            if "raw_text_preview" in st.session_state:
-                with st.expander("🛠️ معاينة النص المستخرج من الـ PDF للتأكد من سلامة القراءة:"):
-                    st.text(st.session_state["raw_text_preview"][:1500])
         else:
-            report_text = f"تقرير فحص منصة DocuAudit AI\nالبند: {st.session_state.get('last_query')}\n\n"
+            report_text = f"تقرير فحص منصة DocuAudit AI\nالبند المطلوب: {st.session_state.get('last_query')}\n\n"
 
             for idx, item in enumerate(st.session_state["latest_results"], start=1):
                 risk = item['risk_level']
