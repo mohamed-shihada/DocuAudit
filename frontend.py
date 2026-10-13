@@ -27,15 +27,17 @@ def normalize_ar(text: str) -> str:
     return text.lower().strip()
 
 def extract_keywords(query: str):
-    stop_words = {"في", "من", "على", "الى", "إلى", "عن", "مع", "او", "أو", "ثم", "كل", "أي", "شروط", "بنود"}
+    # إذا كان الاستعلام يحتوي على السرية، نضمن البحث عن الجذر مباشرة
+    if "سرية" in normalize_ar(query) or "افصاح" in normalize_ar(query):
+        return ["سريه", "افصاح"]
+
+    stop_words = {"في", "من", "على", "الى", "إلى", "عن", "مع", "او", "أو", "ثم", "كل", "أي", "شروط", "بنود", "عدم"}
     raw_words = query.strip().split()
     clean_words = []
     for w in raw_words:
         nw = normalize_ar(w)
-        # إزالة واو العطف الزائدة
         if nw.startswith("و") and len(nw) > 3:
             nw = nw[1:]
-        # إزالة ال التعريف لمطابقة أدق (مثال: الجزائية -> جزائيه)
         if nw.startswith("ال") and len(nw) > 4:
             clean_words.append(nw[2:])
         if nw and nw not in stop_words and len(nw) > 1:
